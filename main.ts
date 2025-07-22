@@ -2,37 +2,39 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { OAuth2Client } from "https://deno.land/x/oauth2_client@v1.0.2/mod.ts";
 import { create, verify } from "https://deno.land/x/djwt@v2.9.1/mod.ts";
 
-// --- 环境变量现在在需要时才获取，这能更好地兼容Deno Deploy的启动流程 ---
+// --- 环境变量获取函数 ---
 const getEnv = (key: string, defaultValue: string = "") => Deno.env.get(key) || defaultValue;
 
-// --- OAuth2 客户端配置现在变成一个函数，在路由被调用时才执行 ---
-function createOAuth2Client() {
+// --- OAuth2 客户端配置函数 ---
+function createOAuth2Client(requestUrl: URL) {
+  // Deno Deploy 会提供 DEPLOYMENT_URL 环境变量
+  const deploymentUrl = getEnv("DEPLOYMENT_URL");
+  // 如果 DEPLOYMENT_URL 存在，就用它，否则从当前请求的 URL 推断
+  const baseUrl = deploymentUrl ? `https://${deploymentUrl}` : requestUrl.origin;
+
   return new OAuth2Client({
     clientId: getEnv("LINUX_DO_CLIENT_ID"),
     clientSecret: getEnv("LINUX_DO_CLIENT_SECRET"),
     authorizationEndpointUri: "https://connect.linux.do/oauth2/authorize",
     tokenUri: "https://connect.linux.do/oauth2/token",
-    // ✅ 这里的地址是正确的，它会从环境变量中读取
-    redirectUri: `${getEnv("DEPLOYMENT_URL")}/auth/callback`,
+    redirectUri: `${baseUrl}/auth/callback`,
     defaults: {
       scope: "read",
     },
   });
 }
 
-// --- 创建方舟的路由系统 ---
+// --- 创建方舟的路由系统  ---
 const router = new Router();
 
-// 路由1: /login - 引导用户去Linux.do星门
 router.get("/login", (ctx) => {
-  const oauth2Client = createOAuth2Client(); // 在这里才创建客户端实例
+  const oauth2Client = createOAuth2Client(ctx.request.url);
   const authUrl = oauth2Client.code.getAuthorizationUri();
   ctx.response.redirect(authUrl);
 });
 
-// 路由2: /auth/callback - 接收Linux.do星门返回的信号
 router.get("/auth/callback", async (ctx) => {
-  const oauth2Client = createOAuth2Client(); // 在这里也重新创建
+  const oauth2Client = createOAuth2Client(ctx.request.url);
   try {
     const tokens = await oauth2Client.code.getToken(ctx.request.url);
     
@@ -45,7 +47,7 @@ router.get("/auth/callback", async (ctx) => {
 
     const payload = {
       username: userData.user.username,
-      exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24), // 凭证有效期24小时
+      exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24),
     };
     const jwt = await create({ alg: "HS256", typ: "JWT" }, payload, getEnv("JWT_SECRET", "default-secret-key"));
 
@@ -58,7 +60,6 @@ router.get("/auth/callback", async (ctx) => {
   }
 });
 
-// 路由3: /me - 前端用凭证来这里换取用户信息
 router.get("/me", async (ctx) => {
     const authHeader = ctx.request.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -76,18 +77,27 @@ router.get("/me", async (ctx) => {
     }
 });
 
-
-// --- 启动方舟引擎 ---
+// --- 启动方舟引擎 (核心变更) ---
 const app = new Application();
 
-// 启用CORS，允许前端停泊港访问
+// 启用CORS中间件
 app.use(async (ctx, next) => {
   ctx.response.headers.set("Access-Control-Allow-Origin", "*");
-  await next();
+  ctx.response.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  if (ctx.request.method === "OPTIONS") {
+    ctx.response.status = 204;
+  } else {
+    await next();
+  }
 });
 
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-console.log("方舟引擎核心已启动 (v2)，正在监听8000端口...");
-await app.listen({ port: 8000 });
+// 【关键改动】我们不再调用 app.listen()，而是监听 fetch 事件
+// 这是 Deno Deploy 推荐的标准模式
+addEventListener("fetch", (event) => {
+  app.handle(event);
+});
+
+console.log("方舟引擎核心已准备就绪 (v3)，等待Deno Deploy的请求...");
