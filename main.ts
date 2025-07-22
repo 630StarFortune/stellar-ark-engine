@@ -1,4 +1,3 @@
-import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { OAuth2Client } from "https://deno.land/x/oauth2_client@v1.0.2/mod.ts";
 import { create, verify } from "https://deno.land/x/djwt@v2.9.1/mod.ts";
 
@@ -7,9 +6,7 @@ const getEnv = (key: string, defaultValue: string = "") => Deno.env.get(key) || 
 
 // --- OAuth2 客户端配置函数 ---
 function createOAuth2Client(requestUrl: URL) {
-  // Deno Deploy 会提供 DEPLOYMENT_URL 环境变量
   const deploymentUrl = getEnv("DEPLOYMENT_URL");
-  // 如果 DEPLOYMENT_URL 存在，就用它，否则从当前请求的 URL 推断
   const baseUrl = deploymentUrl ? `https://${deploymentUrl}` : requestUrl.origin;
 
   return new OAuth2Client({
@@ -24,80 +21,94 @@ function createOAuth2Client(requestUrl: URL) {
   });
 }
 
-// --- 创建方舟的路由系统  ---
-const router = new Router();
+// --- 核心请求处理器 ---
+async function handler(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const pathname = url.pathname;
 
-router.get("/login", (ctx) => {
-  const oauth2Client = createOAuth2Client(ctx.request.url);
-  const authUrl = oauth2Client.code.getAuthorizationUri();
-  ctx.response.redirect(authUrl);
-});
-
-router.get("/auth/callback", async (ctx) => {
-  const oauth2Client = createOAuth2Client(ctx.request.url);
-  try {
-    const tokens = await oauth2Client.code.getToken(ctx.request.url);
-    
-    const userResponse = await fetch("https://connect.linux.do/api/user.json", {
+  // 预检请求处理 (CORS)
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
       headers: {
-        Authorization: `Bearer ${tokens.accessToken}`,
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
       },
     });
-    const userData = await userResponse.json();
-
-    const payload = {
-      username: userData.user.username,
-      exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24),
-    };
-    const jwt = await create({ alg: "HS256", typ: "JWT" }, payload, getEnv("JWT_SECRET", "default-secret-key"));
-
-    ctx.response.redirect(`${getEnv("FRONTEND_URL", "https://this-is-a-test-galaxy--disstella.on.websim.com/")}?token=${jwt}`);
-
-  } catch (error) {
-    console.error("认证错误:", error);
-    ctx.response.body = "认证失败，请重试。";
-    ctx.response.status = 500;
   }
-});
 
-router.get("/me", async (ctx) => {
-    const authHeader = ctx.request.headers.get("Authorization");
+  // 路由1: /login
+  if (pathname === "/login") {
+    const oauth2Client = createOAuth2Client(url);
+    const authUrl = oauth2Client.code.getAuthorizationUri();
+    return new Response(null, {
+      status: 302, // 302表示重定向
+      headers: { "Location": authUrl.toString() },
+    });
+  }
+
+  // 路由2: /auth/callback
+  if (pathname === "/auth/callback") {
+    const oauth2Client = createOAuth2Client(url);
+    try {
+      const tokens = await oauth2Client.code.getToken(url);
+      const userResponse = await fetch("https://connect.linux.do/api/user.json", {
+        headers: { Authorization: `Bearer ${tokens.accessToken}` },
+      });
+      const userData = await userResponse.json();
+
+      const payload = {
+        username: userData.user.username,
+        exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24),
+      };
+      const jwt = await create({ alg: "HS256", typ: "JWT" }, payload, getEnv("JWT_SECRET", "default-secret-key"));
+      
+      const frontendUrl = getEnv("FRONTEND_URL", "https://this-is-a-test-galaxy--disstella.on.websim.com/");
+      return new Response(null, {
+        status: 302,
+        headers: { "Location": `${frontendUrl}?token=${jwt}` },
+      });
+
+    } catch (error) {
+      console.error("认证错误:", error);
+      return new Response("认证失败，请重试。", { 
+        status: 500,
+        headers: { "Access-Control-Allow-Origin": "*" } 
+      });
+    }
+  }
+
+  // 路由3: /me
+  if (pathname === "/me") {
+    const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        ctx.response.status = 401;
-        ctx.response.body = { error: "未授权" };
-        return;
+      return new Response(JSON.stringify({ error: "未授权" }), { 
+        status: 401, 
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } 
+      });
     }
     const jwt = authHeader.split(" ")[1];
     try {
-        const payload = await verify(jwt, getEnv("JWT_SECRET", "default-secret-key"));
-        ctx.response.body = { username: payload.username };
+      const payload = await verify(jwt, getEnv("JWT_SECRET", "default-secret-key"));
+      return new Response(JSON.stringify({ username: payload.username }), { 
+        status: 200,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+      });
     } catch (_error) {
-        ctx.response.status = 401;
-        ctx.response.body = { error: "无效的凭证" };
+      return new Response(JSON.stringify({ error: "无效的凭证" }), { 
+        status: 401, 
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+      });
     }
-});
-
-// --- 启动方舟引擎 (核心变更) ---
-const app = new Application();
-
-// 启用CORS中间件
-app.use(async (ctx, next) => {
-  ctx.response.headers.set("Access-Control-Allow-Origin", "*");
-  ctx.response.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  if (ctx.request.method === "OPTIONS") {
-    ctx.response.status = 204;
-  } else {
-    await next();
   }
-});
 
-app.use(router.routes());
-app.use(router.allowedMethods());
+  // 根路径或其他路径的默认响应
+  return new Response("方舟引擎核心 (v4) 正在运行。", {
+    headers: { "Access-Control-Allow-Origin": "*" }
+  });
+}
 
-// 【关键改动】我们不再调用 app.listen()，而是监听 fetch 事件
-// 这是 Deno Deploy 推荐的标准模式
-addEventListener("fetch", (event) => {
-  app.handle(event);
-});
-
-console.log("方舟引擎核心已准备就绪 (v3)，等待Deno Deploy的请求...");
+// --- 启动方舟引擎 (原生模式) ---
+console.log("方舟引擎核心已准备就绪 (v4)，使用原生Deno.serve...");
+Deno.serve(handler);
