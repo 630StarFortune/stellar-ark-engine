@@ -1,18 +1,17 @@
+// 文件名: main.ts (最终修正版 v8)
 import { OAuth2Client } from "https://deno.land/x/oauth2_client@v1.0.2/mod.ts";
 import { create, verify } from "https://deno.land/x/djwt@v2.9.1/mod.ts";
 
 const getEnv = (key: string, defaultValue: string = "") => Deno.env.get(key) || defaultValue;
 
-// 【关键改动】我们直接从环境变量构造回调地址，不再依赖请求URL
-const DENO_DEPLOYMENT_URL = getEnv("DENO_DEPLOYMENT_URL"); // Deno Deploy 提供的标准环境变量
-const REDIRECT_URI = `https://${DENO_DEPLOYMENT_URL}/auth/callback`;
+const REDIRECT_URI = `https://${getEnv("DENO_DEPLOYMENT_URL")}/auth/callback`;
 
 const oauth2Client = new OAuth2Client({
   clientId: getEnv("LINUX_DO_CLIENT_ID"),
   clientSecret: getEnv("LINUX_DO_CLIENT_SECRET"),
   authorizationEndpointUri: "https://connect.linux.do/oauth2/authorize",
   tokenUri: "https://connect.linux.do/oauth2/token",
-  redirectUri: REDIRECT_URI, // 直接使用上面构造好的、唯一的地址
+  redirectUri: REDIRECT_URI,
   defaults: {
     scope: "read",
   },
@@ -80,11 +79,11 @@ async function handler(req: Request): Promise<Response> {
     }
     const jwt = authHeader.split(" ")[1];
     try {
-      const payload = await verify(jwt, getEnv("JWT_SECRET", "default-secret-key"));
-      return new Response(JSON.stringify({ username: payload.username }), { 
-        status: 200,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-      });
+        const payload = await verify(jwt, getEnv("JWT_SECRET", "1593570rt"));
+        return new Response(JSON.stringify({ username: payload.username }), { 
+            status: 200,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
     } catch (_error) {
       return new Response(JSON.stringify({ error: "无效的凭证" }), { 
         status: 401, 
@@ -93,10 +92,10 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
-  return new Response("方舟引擎核心 (v5) 正在运行。", {
+  return new Response("方舟引擎核心 (v8) 正在运行。", {
     headers: { "Access-Control-Allow-Origin": "*" }
   });
 }
 
-console.log("方舟引擎核心已准备就绪 (v5)，使用原生Deno.serve...");
+console.log("方舟引擎核心已准备就绪 (v8)，使用原生Deno.serve...");
 Deno.serve(handler);
