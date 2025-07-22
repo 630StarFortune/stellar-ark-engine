@@ -1,32 +1,27 @@
 import { OAuth2Client } from "https://deno.land/x/oauth2_client@v1.0.2/mod.ts";
 import { create, verify } from "https://deno.land/x/djwt@v2.9.1/mod.ts";
 
-// --- 环境变量获取函数 ---
 const getEnv = (key: string, defaultValue: string = "") => Deno.env.get(key) || defaultValue;
 
-// --- OAuth2 客户端配置函数 ---
-function createOAuth2Client(requestUrl: URL) {
-  const deploymentUrl = getEnv("DEPLOYMENT_URL");
-  const baseUrl = deploymentUrl ? `https://${deploymentUrl}` : requestUrl.origin;
+// 【关键改动】我们直接从环境变量构造回调地址，不再依赖请求URL
+const DENO_DEPLOYMENT_URL = getEnv("DENO_DEPLOYMENT_URL"); // Deno Deploy 提供的标准环境变量
+const REDIRECT_URI = `https://${DENO_DEPLOYMENT_URL}/auth/callback`;
 
-  return new OAuth2Client({
-    clientId: getEnv("LINUX_DO_CLIENT_ID"),
-    clientSecret: getEnv("LINUX_DO_CLIENT_SECRET"),
-    authorizationEndpointUri: "https://connect.linux.do/oauth2/authorize",
-    tokenUri: "https://connect.linux.do/oauth2/token",
-    redirectUri: `${baseUrl}/auth/callback`,
-    defaults: {
-      scope: "read",
-    },
-  });
-}
+const oauth2Client = new OAuth2Client({
+  clientId: getEnv("LINUX_DO_CLIENT_ID"),
+  clientSecret: getEnv("LINUX_DO_CLIENT_SECRET"),
+  authorizationEndpointUri: "https://connect.linux.do/oauth2/authorize",
+  tokenUri: "https://connect.linux.do/oauth2/token",
+  redirectUri: REDIRECT_URI, // 直接使用上面构造好的、唯一的地址
+  defaults: {
+    scope: "read",
+  },
+});
 
-// --- 核心请求处理器 ---
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const pathname = url.pathname;
 
-  // 预检请求处理 (CORS)
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -38,19 +33,15 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // 路由1: /login
   if (pathname === "/login") {
-    const oauth2Client = createOAuth2Client(url);
     const authUrl = oauth2Client.code.getAuthorizationUri();
     return new Response(null, {
-      status: 302, // 302表示重定向
+      status: 302,
       headers: { "Location": authUrl.toString() },
     });
   }
 
-  // 路由2: /auth/callback
   if (pathname === "/auth/callback") {
-    const oauth2Client = createOAuth2Client(url);
     try {
       const tokens = await oauth2Client.code.getToken(url);
       const userResponse = await fetch("https://connect.linux.do/api/user.json", {
@@ -62,7 +53,7 @@ async function handler(req: Request): Promise<Response> {
         username: userData.user.username,
         exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24),
       };
-      const jwt = await create({ alg: "HS256", typ: "JWT" }, payload, getEnv("JWT_SECRET", "default-secret-key"));
+      const jwt = await create({ alg: "HS256", typ: "JWT" }, payload, getEnv("JWT_SECRET", "1593570rt"));
       
       const frontendUrl = getEnv("FRONTEND_URL", "https://this-is-a-test-galaxy--disstella.on.websim.com/");
       return new Response(null, {
@@ -79,7 +70,6 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
-  // 路由3: /me
   if (pathname === "/me") {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -103,12 +93,10 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
-  // 根路径或其他路径的默认响应
-  return new Response("方舟引擎核心 (v4) 正在运行。", {
+  return new Response("方舟引擎核心 (v5) 正在运行。", {
     headers: { "Access-Control-Allow-Origin": "*" }
   });
 }
 
-// --- 启动方舟引擎 (原生模式) ---
-console.log("方舟引擎核心已准备就绪 (v4)，使用原生Deno.serve...");
+console.log("方舟引擎核心已准备就绪 (v5)，使用原生Deno.serve...");
 Deno.serve(handler);
